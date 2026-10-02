@@ -26,6 +26,8 @@ export { KnowledgeIndex } from "./index-store.ts";
 export type { ProposeOptions } from "./pat.ts";
 export { ProposerAgent } from "./pat.ts";
 export { VerifierAgent } from "./sat.ts";
+export type { DiffusionTrace, SnrRerankerOptions, SnrScore } from "./snr-reranker.ts";
+export { SnrReranker } from "./snr-reranker.ts";
 export type {
 	CandidateAnswer,
 	Citation,

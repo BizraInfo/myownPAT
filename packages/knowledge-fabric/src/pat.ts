@@ -1,4 +1,5 @@
-import type { KnowledgeIndex } from "./index-store.ts";
+import type { ChunkScore, KnowledgeIndex } from "./index-store.ts";
+import { SnrReranker } from "./snr-reranker.ts";
 import type { CandidateAnswer, Citation } from "./types.ts";
 
 /**
@@ -16,23 +17,43 @@ export interface ProposeOptions {
 	readonly maxChunks?: number;
 	/** Whether to expand the query via the candidate graph. Defaults to true. */
 	readonly useGraphWalk?: boolean;
+	/**
+	 * Whether to reorder the lexical candidates with the HHMM + diffusion SNR
+	 * reranker before composing citations. Opt-in and defaults to false so the
+	 * baseline TF-IDF behaviour is unchanged. The reranker only reorders; it
+	 * mints no authority and cannot strengthen an answer past SAT, which still
+	 * re-reads the sealed bytes for every citation.
+	 */
+	readonly useSnrReranker?: boolean;
 }
 
 const DEFAULT_MAX_CHUNKS = 3;
 
 export class ProposerAgent {
 	private readonly index: KnowledgeIndex;
+	private readonly reranker: SnrReranker;
 
 	constructor(index: KnowledgeIndex) {
 		this.index = index;
+		this.reranker = new SnrReranker(index);
 	}
 
 	propose(query: string, options: ProposeOptions = {}): CandidateAnswer {
 		const maxChunks = options.maxChunks ?? DEFAULT_MAX_CHUNKS;
 		const useGraphWalk = options.useGraphWalk ?? true;
+		const useSnrReranker = options.useSnrReranker ?? false;
 
-		const effectiveQuery = useGraphWalk ? [...this.index.expandTerms(query)].join(" ") : query;
-		const ranked = this.index.lexicalSearch(effectiveQuery, maxChunks);
+		const expandedTerms = useGraphWalk ? this.index.expandTerms(query) : undefined;
+		const effectiveQuery = expandedTerms ? [...expandedTerms].join(" ") : query;
+		let ranked: readonly ChunkScore[] = this.index.lexicalSearch(effectiveQuery, maxChunks);
+
+		if (useSnrReranker && ranked.length > 0) {
+			// Reorder by SNR but keep the same candidate set and ChunkScore shape so
+			// the downstream citation composition is identical except for order.
+			const byId = new Map(ranked.map((result) => [result.chunk.id, result]));
+			const reranked = this.reranker.rerank(query, ranked, { expandedTerms });
+			ranked = reranked.map((result) => byId.get(result.chunk.id)).filter((result) => result !== undefined);
+		}
 
 		const citations: Citation[] = ranked.map((result) => ({
 			chunkId: result.chunk.id,
